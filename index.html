@@ -29,7 +29,7 @@ nav button{background:transparent;border:0;color:var(--muted);padding:7px;font-s
 
 .swipe-wrap{position:relative;overflow:hidden;border-bottom:1px solid var(--line);touch-action:pan-y}
 .swipe-action{position:absolute;left:0;top:0;bottom:0;width:120px;background:#15803d;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px}
-.swipe-wrap>.player{position:relative;background:var(--bg);border-bottom:0;will-change:transform;transition:transform .16s ease}
+.swipe-wrap>.player{position:relative;background:var(--bg);border-bottom:0;transition:transform .16s ease}
 .swipe-wrap.swipe-ok>.swipe-action{background:#16a34a}
 .hist{background:#fef3c7;color:#78350f}.histnote{border-left:3px solid #f59e0b}
 
@@ -16354,6 +16354,10 @@ function bindSwipe(wrap){
     try{row.releasePointerCapture(pointerId)}catch(_){}
   };
 
+  // will-change va acceso solo durante il gesto: lasciarlo nel CSS creerebbe un
+  // layer di compositing per ognuna delle 505 righe e su iOS la lista resta bianca.
+  const clearHint=()=>{setTimeout(()=>{row.style.willChange=""},400)};
+
   row.addEventListener("pointerdown",e=>{
     if(e.pointerType==="mouse" && e.button!==0) return;
     // Non iniziare mai lo swipe da un controllo della scheda: catturare il puntatore
@@ -16370,7 +16374,7 @@ function bindSwipe(wrap){
 
     // If the gesture is mainly vertical, leave normal page scrolling untouched.
     if(Math.abs(my)>Math.abs(mx) && Math.abs(my)>10){
-      active=false;dx=0;releaseCapture();row.style.transform="";
+      active=false;dx=0;releaseCapture();clearHint();row.style.transform="";
       row.style.transition="transform .16s ease";
       wrap.classList.remove("swipe-ok");
       return;
@@ -16380,6 +16384,7 @@ function bindSwipe(wrap){
       dx=Math.min(128,mx);
       if(dx>8 && !moved){
         moved=true;
+        row.style.willChange="transform";
         // Solo ora il gesto è davvero uno swipe orizzontale: catturiamo il puntatore
         // per seguirlo fuori dalla riga, e il click verrà comunque annullato sotto.
         try{row.setPointerCapture(pointerId);captured=true}catch(_){}
@@ -16390,7 +16395,7 @@ function bindSwipe(wrap){
   });
 
   const endSwipe=e=>{
-    releaseCapture();
+    releaseCapture();clearHint();
     if(!active){row.style.transform="";wrap.classList.remove("swipe-ok");return}
     active=false;
     row.style.transition="transform .16s ease";
