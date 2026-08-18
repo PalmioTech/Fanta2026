@@ -16239,16 +16239,27 @@ const HISTORY_ALIASES={"nuno tavares":"tavares n","kone":"kone m","paz":"paz n",
 const normHist=s=>(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim();
 const HISTORY={};
 Object.entries(HISTORY_RAW).forEach(([k,v])=>HISTORY[normHist(k)]=v);
+const HISTORY_KEYS=Object.keys(HISTORY);
+const HIST_PRICE_CACHE=new Map();
 function histPrice(p){
   const k=normHist(p.name);
-  if(HISTORY[k]!=null)return HISTORY[k];
-  if(HISTORY_ALIASES[k]&&HISTORY[HISTORY_ALIASES[k]]!=null)return HISTORY[HISTORY_ALIASES[k]];
-  const c=Object.entries(HISTORY).filter(([hk])=>hk===k||hk.startsWith(k+" ")||k.startsWith(hk+" "));
-  return c.length===1?c[0][1]:null;
+  if(HIST_PRICE_CACHE.has(k))return HIST_PRICE_CACHE.get(k);
+  let v=null;
+  if(HISTORY[k]!=null)v=HISTORY[k];
+  else if(HISTORY_ALIASES[k]&&HISTORY[HISTORY_ALIASES[k]]!=null)v=HISTORY[HISTORY_ALIASES[k]];
+  else{
+    const c=HISTORY_KEYS.filter(hk=>hk===k||hk.startsWith(k+" ")||k.startsWith(hk+" "));
+    if(c.length===1)v=HISTORY[c[0]];
+  }
+  HIST_PRICE_CACHE.set(k,v);
+  return v;
 }
+const ROLE_FACTOR_CACHE={};
 function historicalRoleFactor(r){
+ if(ROLE_FACTOR_CACHE[r]!=null)return ROLE_FACTOR_CACHE[r];
  const xs=P.filter(p=>p.role===r&&histPrice(p)!=null&&p.hi>0).map(p=>histPrice(p)/p.hi).filter(Number.isFinite).sort((a,b)=>a-b);
- if(!xs.length)return 1;return Math.max(.78,Math.min(1.32,xs[Math.floor(xs.length/2)]));
+ const v=xs.length?Math.max(.78,Math.min(1.32,xs[Math.floor(xs.length/2)])):1;
+ ROLE_FACTOR_CACHE[r]=v;return v;
 }
 function maxNow(p){
  const live=inflation(p.role),rh=historicalRoleFactor(p.role),hp=histPrice(p);
@@ -16265,7 +16276,17 @@ function injectHistory(root=document){
  });
 }
 function updateDynamicPrices(root=document){
- root.querySelectorAll(".player").forEach(d=>{const p=byId(d.dataset.id);if(!p)return;const rr=rec(d.dataset.id);if(rr.status!=="sold"){const b=d.querySelector(".price b"),sp=d.querySelector(".price span");if(b)b.textContent=maxNow(p);if(sp)sp.textContent=histPrice(p)!=null?"max calibrato":"max ora";}});
+ root.querySelectorAll(".player").forEach(d=>{
+  const p=byId(d.dataset.id);if(!p)return;
+  const rr=rec(d.dataset.id),b=d.querySelector(".price b"),sp=d.querySelector(".price span");
+  if(rr.status==="sold"){
+   if(b)b.textContent=rr.price!=null?rr.price:1;
+   if(sp)sp.textContent=rr.buyer?"→ "+rr.buyer:"venduto";
+  }else{
+   if(b)b.textContent=maxNow(p);
+   if(sp)sp.textContent=histPrice(p)!=null?"max calibrato":"max ora";
+  }
+ });
 }
 function updateHistoricalSummary(){
  ["P","D","C","A"].forEach(r=>{const e=document.getElementById("h"+r);if(!e)return;const a=P.filter(p=>p.role===r&&histPrice(p)!=null).map(p=>histPrice(p)).sort((a,b)=>a-b);e.textContent=a.length?a[Math.floor(a.length/2)]+" cr":"—";});
@@ -16273,14 +16294,23 @@ function updateHistoricalSummary(){
 let mem={},storageOK=false;
 try{const t="__fanta_test__";localStorage.setItem(t,"1");localStorage.removeItem(t);storageOK=true;mem=JSON.parse(localStorage.getItem("fantaV5")||"{}")||{};}catch(e){storageOK=false;mem={};}
 const warning=document.getElementById("jsWarning");warning.style.display=storageOK?"none":"block";
-const save=()=>{if(storageOK){try{localStorage.setItem("fantaV5",JSON.stringify(mem));}catch(e){}}};
+let memVersion=0;
+const save=()=>{memVersion++;if(storageOK){try{localStorage.setItem("fantaV5",JSON.stringify(mem));}catch(e){}}};
 const byId=id=>P.find(x=>x.id===Number(id));
 const rec=id=>mem[id]||{status:"free",price:null,buyer:""};
 let role="";
-function inflation(r){const xs=P.filter(p=>p.role===r&&rec(p.id).status==="sold"&&Number(rec(p.id).price)>0).map(p=>Number(rec(p.id).price)/Math.max(1,(p.lo+p.hi)/2)).sort((a,b)=>a-b);return xs.length?Math.max(.65,Math.min(1.55,xs[Math.floor(xs.length/2)])):1}
+const INFL_CACHE={v:-1,val:{}};
+function inflation(r){
+ if(INFL_CACHE.v!==memVersion){INFL_CACHE.v=memVersion;INFL_CACHE.val={}}
+ if(INFL_CACHE.val[r]!=null)return INFL_CACHE.val[r];
+ const xs=P.filter(p=>p.role===r&&rec(p.id).status==="sold"&&Number(rec(p.id).price)>0).map(p=>Number(rec(p.id).price)/Math.max(1,(p.lo+p.hi)/2)).sort((a,b)=>a-b);
+ const v=xs.length?Math.max(.65,Math.min(1.55,xs[Math.floor(xs.length/2)])):1;
+ INFL_CACHE.val[r]=v;return v;
+}
 function updateInfl(){["P","D","C","A"].forEach(r=>document.getElementById("i"+r).textContent=inflation(r).toFixed(2)+"×")}
 
 function quickSellOne(id){
+  if(rec(id).status==="sold")return; // uno swipe accidentale non deve cancellare prezzo e acquirente
   mem[id]={status:"sold",price:1,buyer:""};
   save();
   refresh();
@@ -16291,14 +16321,22 @@ function bindSwipe(wrap){
   const row=wrap.querySelector(".player");
   if(!row) return;
 
-  let startX=0,startY=0,dx=0,active=false,moved=false,pointerId=null;
+  let startX=0,startY=0,dx=0,active=false,moved=false,captured=false,pointerId=null;
+
+  const releaseCapture=()=>{
+    if(!captured) return;
+    captured=false;
+    try{row.releasePointerCapture(pointerId)}catch(_){}
+  };
 
   row.addEventListener("pointerdown",e=>{
     if(e.pointerType==="mouse" && e.button!==0) return;
+    // Non iniziare mai lo swipe da un controllo della scheda: catturare il puntatore
+    // qui sposterebbe il click successivo dal bottone/summary alla riga.
+    if(e.target.closest(".detail,input,select,button,textarea,label,a")) return;
     active=true;moved=false;dx=0;pointerId=e.pointerId;
     startX=e.clientX;startY=e.clientY;
     row.style.transition="none";
-    try{row.setPointerCapture(e.pointerId)}catch(_){}
   });
 
   row.addEventListener("pointermove",e=>{
@@ -16307,20 +16345,27 @@ function bindSwipe(wrap){
 
     // If the gesture is mainly vertical, leave normal page scrolling untouched.
     if(Math.abs(my)>Math.abs(mx) && Math.abs(my)>10){
-      active=false;dx=0;row.style.transform="";
+      active=false;dx=0;releaseCapture();row.style.transform="";
       row.style.transition="transform .16s ease";
+      wrap.classList.remove("swipe-ok");
       return;
     }
 
     if(mx>0){
       dx=Math.min(128,mx);
-      if(dx>8) moved=true;
+      if(dx>8 && !moved){
+        moved=true;
+        // Solo ora il gesto è davvero uno swipe orizzontale: catturiamo il puntatore
+        // per seguirlo fuori dalla riga, e il click verrà comunque annullato sotto.
+        try{row.setPointerCapture(pointerId);captured=true}catch(_){}
+      }
       row.style.transform=`translateX(${dx}px)`;
       wrap.classList.toggle("swipe-ok",dx>=82);
     }
   });
 
   const endSwipe=e=>{
+    releaseCapture();
     if(!active){row.style.transform="";wrap.classList.remove("swipe-ok");return}
     active=false;
     row.style.transition="transform .16s ease";
@@ -16357,16 +16402,28 @@ function hookDetails(root=document){
   const id=d.dataset.id, st=d.querySelector(".sold-status"), fields=d.querySelector(".sold-fields"), pr=d.querySelector(".sold-price"), bu=d.querySelector(".sold-buyer"), btn=d.querySelector(".save-btn");
   const rr=rec(id); st.value=rr.status||"free"; pr.value=rr.price||""; bu.value=rr.buyer||""; fields.style.display=st.value==="sold"?"block":"none"; if(rr.status==="sold")d.classList.add("sold");
   st.addEventListener("change",()=>fields.style.display=st.value==="sold"?"block":"none");
-  btn.addEventListener("click",()=>{if(st.value==="sold"&&!Number(pr.value)){alert("Inserisci il prezzo.");return} mem[id]={status:st.value,price:st.value==="sold"?Number(pr.value):null,buyer:st.value==="sold"?bu.value.trim():""};save();refresh();});
+  btn.addEventListener("click",()=>{
+   if(st.value==="sold"){
+    const v=Math.round(Number(pr.value));
+    if(!(v>=1)){alert("Inserisci un prezzo valido (almeno 1 credito).");return}
+    mem[id]={status:"sold",price:v,buyer:bu.value.trim()};
+   }else{
+    mem[id]={status:"free",price:null,buyer:""};
+   }
+   save();refresh();
+  });
  });
 }
 function refresh(){
  const q=(document.getElementById("search").value||"").toLowerCase(),status=document.getElementById("status").value;let vis=0,fr=0,so=0;
  document.querySelectorAll("#allPlayers .swipe-wrap").forEach(w=>{const d=w.querySelector(".player"),rr=rec(d.dataset.id),okRole=!role||d.dataset.role===role,okQ=!q||d.dataset.name.includes(q),okStatus=status==="all"||rr.status===status,show=okRole&&okQ&&okStatus;w.classList.toggle("hidden",!show);d.classList.toggle("sold",rr.status==="sold");if(show)vis++;if(rr.status==="sold")so++;else fr++;});
- document.getElementById("nVisible").textContent=vis;document.getElementById("nFree").textContent=fr;document.getElementById("nSold").textContent=so;updateDynamicPrices(document.getElementById("allPlayers"));renderFree();updateInfl();updateHistoricalSummary();
+ document.getElementById("nVisible").textContent=vis;document.getElementById("nFree").textContent=fr;document.getElementById("nSold").textContent=so;updateDynamicPrices(document.getElementById("allPlayers"));if(document.getElementById("freeView").classList.contains("active"))renderFree();updateInfl();updateHistoricalSummary();
 }
 function renderFree(){
- const target=document.getElementById("freePlayers"),src=[...document.querySelectorAll("#allPlayers .swipe-wrap")].filter(w=>rec(w.dataset.id).status!=="sold");target.innerHTML=src.map(w=>w.outerHTML).join("");document.getElementById("freeTotal").textContent=src.length;document.getElementById("freeTop").textContent=src.filter(w=>w.querySelector(".player").dataset.cat==="TOP").length;document.getElementById("freeLow").textContent=src.filter(w=>w.querySelector(".player").dataset.cat==="LOW COST").length;hookDetails(target);
+ const target=document.getElementById("freePlayers"),src=[...document.querySelectorAll("#allPlayers .swipe-wrap")].filter(w=>rec(w.dataset.id).status!=="sold");target.innerHTML=src.map(w=>w.outerHTML).join("");document.getElementById("freeTotal").textContent=src.length;document.getElementById("freeTop").textContent=src.filter(w=>w.querySelector(".player").dataset.cat==="TOP").length;document.getElementById("freeLow").textContent=src.filter(w=>w.querySelector(".player").dataset.cat==="LOW COST").length;
+ // outerHTML porta con sé data-swipe-bound: senza ripulirlo i cloni non reagiscono più allo swipe.
+ target.querySelectorAll(".swipe-wrap").forEach(w=>{w.removeAttribute("data-swipe-bound");w.classList.remove("swipe-ok");const r=w.querySelector(".player");if(r){r.style.transform="";r.open=false;}});
+ hookDetails(target);
 }
 document.getElementById("search").addEventListener("input",refresh);document.getElementById("status").addEventListener("change",refresh);
 document.querySelectorAll(".roles button").forEach(b=>b.addEventListener("click",()=>{document.querySelectorAll(".roles button").forEach(x=>x.classList.remove("active"));b.classList.add("active");role=b.dataset.role;refresh();}));
